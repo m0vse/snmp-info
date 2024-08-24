@@ -1,4 +1,4 @@
-# SNMP::Info::Layer2::Ubiquiti - SNMP Interface to Ubiquiti Devices
+# SNMP::Info::Layer2::Cambium - SNMP Interface to Cambium Devices
 #
 # Copyright (c) 2024 Phil Taylor M0VSE
 #
@@ -32,7 +32,6 @@ use strict;
 use warnings;
 use Exporter;
 use SNMP::Info::Layer2;
-
 
 
 @SNMP::Info::Layer2::Cambium::ISA       = qw/SNMP::Info::Layer2 Exporter/;
@@ -80,7 +79,11 @@ $VERSION = '1.000000';
     'cambium_c_ip'     => 'cambiumClientIPAddress',
 );
 
-%MUNGE = ( %SNMP::Info::Layer2::MUNGE);
+%MUNGE = ( %SNMP::Info::Layer2::MUNGE, 'cambium_mac' => \&SNMP::Info::munge_mac, );
+
+sub layers {
+    return '00000111';
+}
 
 sub os {
 	return 'CambiumOS';
@@ -89,14 +92,9 @@ sub os {
 sub os_ver {
     my $cambium = shift;
 
-    my $versions = $cambium->cambium_version();
+    my $os_ver = $cambium->cambium_version();
 
-    foreach my $iid ( keys %$versions ) {
-        my $ver = $versions->{$iid};
-        next unless defined $ver;
-        return $ver;
-
-    }
+    return $os_ver;
 }
 
 sub vendor {
@@ -106,41 +104,23 @@ sub vendor {
 sub model {
     my $cambium = shift;
 
-    my $names = $cambium->cambium_model();
-
-    foreach my $iid ( keys %$names ) {
-        my $prod = $names->{$iid};
-        next unless defined $prod;
-        return $prod;
-    }
+    my $model = $cambium->cambium_model();
+    return $model;
 }
 
-## simply take the MAC and clean it up
 sub serial {
     my $cambium = shift;
 
-    my $snum = $cambium->cambium_serial();
-    
-	foreach my $iid ( keys %$snum ) {
-        my $ser = $snum->{$iid};
-        next unless defined $ser;
-        return $ser;
-    }
-    return ;
+    my $serial = $cambium->cambium_serial();
+    return $serial;
 }
 
 sub mac {
 	
-	my $cambium = shift;
+    my $cambium = shift;
 
-    my $addresses = $cambium->cambium_mac();
-    
-	foreach my $iid ( keys %$addresses ) {
-        my $macaddr = $addresses->{$iid};
-        next unless defined $macaddr;
-        return $macaddr;
-    }
-    return ;
+    my $mac = $cambium->cambium_mac();
+    return $mac;
 }
 
 
@@ -158,7 +138,7 @@ Phil Taylor M0VSE
 =head1 SYNOPSIS
 
  # Let SNMP::Info determine the correct subclass for you.
- my $ubnt = new SNMP::Info(
+ my $cambium = new SNMP::Info(
                           AutoSpecify => 1,
                           Debug       => 1,
                           DestHost    => 'myswitch',
@@ -167,7 +147,7 @@ Phil Taylor M0VSE
                         )
     or die "Can't connect to DestHost.\n";
 
- my $class = $ubnt->class();
+ my $class = $cambium->class();
  print "SNMP::Info determined this device to fall under subclass : $class\n";
 
 =head1 DESCRIPTION
