@@ -817,6 +817,12 @@ CBS30x0 and CBS31x0 series, all running IOS.
 
 See documentation in L<SNMP::Info::Layer3::C6500> for details.
 
+=item SNMP::Info::Layer2::Cambium
+
+Subclass for Cambium wireless access points.
+
+See documentation in L<SNMP::Info::Layer2::Cambium> for details.
+
 =item SNMP::Info::Layer3::CheckPoint
 
 Subclass for CheckPoint devices.
@@ -1804,6 +1810,7 @@ sub device_type {
         14823 => 'SNMP::Info::Layer3::Aruba',
         14988 => 'SNMP::Info::Layer3::Mikrotik',
         17163 => 'SNMP::Info::Layer3::Steelhead',
+        17713 => 'SNMP::Info::Layer2::Cambium',
         19046 => 'SNMP::Info::Layer3::Lenovo',
         21091 => 'SNMP::Info::Layer2::Exinda',
         23867 => 'SNMP::Info::Layer3::SilverPeak',
@@ -1830,7 +1837,7 @@ sub device_type {
         96    => 'SNMP::Info::Layer3::Whiterabbit',
         171   => 'SNMP::Info::Layer3::DLink',
         207   => 'SNMP::Info::Layer2::Allied',
-	248   => 'SNMP::Info::Layer2::Hirschmann',
+	    248   => 'SNMP::Info::Layer2::Hirschmann',
         266   => 'SNMP::Info::Layer2::Nexans',
         664   => 'SNMP::Info::Layer2::Adtran',
         674   => 'SNMP::Info::Layer3::Dell',
