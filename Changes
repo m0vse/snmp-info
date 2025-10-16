@@ -1,3 +1,50 @@
+Version 3.974000 (2025-09-12)
+
+  [ENHANCEMENTS]
+
+  * Stormshield uses STORMSHIELD-IF-MIB for i_ methods
+  * #551 Huawei os, os_ver normalized and patch info added
+
+Version 3.973000 (2025-09-04)
+
+  [NEW FEATURES]
+
+  * #550 Stormshield support
+
+  [ENHANCEMENTS]
+
+  * #546 Layer7::Neoteris improvments (@earendilfr)
+
+Version 3.972002 (2024-10-29)
+
+  [BUG FIXES]
+
+  * docs and tests
+
+Version 3.972001 (2024-10-29)
+
+  [NEW FEATURES]
+
+  * Cisco Catalyst 1300 Series Managed Switch support
+
+Version 3.972000 (2024-09-12)
+
+  [NEW FEATURES]
+
+  * #530 Extreme WiNG support
+
+Version 3.971000 (2024-08-28)
+
+  [NEW FEATURES]
+
+  * #524 SilverPeak device support
+  * Layer3::Meraki class from Jeremiah Garmatter
+
+  [ENHANCEMENTS]
+
+  * #502 update SNMP::Info::Layer3::Fortinet
+  * #519 lots of improvements to Layer2::Aerohive
+
 Version 3.970001 (2024-02-28)
   [BUG FIXES]
 

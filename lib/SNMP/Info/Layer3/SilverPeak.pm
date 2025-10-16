@@ -39,12 +39,12 @@ use SNMP::Info::Layer3;
 
 our ($VERSION, %MIBS, %FUNCS, %GLOBALS, %MUNGE);
 
-$VERSION = '3.970001';
+$VERSION = '3.974000';
 
 %MIBS = (
     %SNMP::Info::Layer3::MIBS,
     'SILVERPEAK-MGMT-MIB'    => 'spsSystemVersion',
-    'SILVERPEAK-PRODUCTS-MIB' => 'spsProductModel',
+    'SILVERPEAK-PRODUCTS-MIB' => 'silverpeakProductsMIB',
 );
 
 %GLOBALS = (
@@ -134,7 +134,9 @@ Abstraction subclass for SilverPeak devices.
 
 =head2 Required MIBs
 
-F<STEELHEAD-MIB>
+F<SILVERPEAK-MGMT-MIB>
+
+F<SILVERPEAK-PRODUCTS-MIB>
 
 =over
 
@@ -198,5 +200,9 @@ to a hash.
 =head2 Table Methods imported from SNMP::Info::Layer3
 
 See documentation in L<SNMP::Info::Layer3/"TABLE METHODS"> for details.
+
+=head2 AUTHOR
+
+Written and contributed by Muris Boric. Many thanks!
 
 =cut
