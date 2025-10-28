@@ -218,7 +218,6 @@ sub mac {
     for my $idx (keys %$raw) {
       my $norm = _try_decode_any_mac_value($raw->{$idx});
       next unless $norm;
-      print ("**** MAC ADDRESS $norm ****");
       return $norm;
     }
   }
@@ -272,54 +271,6 @@ sub at_netaddr {
         $out{$idx} = $ip;
     }
     return \%out;
-}
-
-# ---------------------------------------------------------------------------
-# SSIDs per interface (i_ssidlist)
-# ---------------------------------------------------------------------------
-sub i_ssidlist {
-    my ($self, $partial) = @_;
-    my $ssid  = $self->cam_wlan_ssid()  || {};
-    my $band  = $self->cam_wlan_band()  || {};
-    return {} unless %$ssid;
-
-    my $ifdescr = $self->i_description($partial) || {};
-
-    my (@rad24, @rad5, @bridge);
-    for my $iid (keys %$ifdescr) {
-        my $n = lc($ifdescr->{$iid} // '');
-        push @rad24,  $iid if $n =~ /radio0|wlan0/;
-        push @rad5,   $iid if $n =~ /radio1|wlan1|wlan16/;
-        push @bridge, $iid if $n =~ /^br/;
-    }
-
-    my @rad_any = sort { $a <=> $b }
-                  grep { (lc($ifdescr->{$_}||'')) =~ /^(?:radio|wlan)/ }
-                  keys %$ifdescr;
-    @rad24  = @rad24  ? @rad24  : (@rad_any ? ($rad_any[0]) : ());
-    @rad5   = @rad5   ? @rad5   : (@rad_any > 1 ? ($rad_any[1]) : @rad_any);
-    @bridge = @bridge ? @bridge : ();
-
-    my %acc;
-    for my $idx (keys %$ssid) {
-        my $s = $ssid->{$idx};
-        next unless defined $s && $s ne '';
-        my $b = ($band->{$idx} // 'both');
-        my @targets;
-        if    ($b =~ /5ghz/i)    { @targets = @rad5; }
-        elsif ($b =~ /2\.4ghz/i) { @targets = @rad24; }
-        else                     { @targets = (@rad24, @rad5); }
-        @targets = @bridge unless @targets;
-        for my $iid (@targets) {
-            next unless defined $iid;
-            push @{ $acc{$iid} }, $s;
-        }
-    }
-
-    for my $iid (keys %acc) {
-        my %seen; $acc{$iid} = [ grep { !$seen{$_}++ } @{ $acc{$iid} } ];
-    }
-    return \%acc;
 }
 
 # ---------------------------------------------------------------------------
@@ -447,6 +398,417 @@ sub _wlan_targets {
 }
 
 
+
+# --- ssidlist ----------------------------------------------------
+
+# ===================== Cambium SSID & client mapping ======================
+
+# Tell Netdisco which ifIndexes are wireless. This enables Wireless worker to store rows.
+sub i_wireless {
+  my ($i) = @_;
+  my $names = $i->i_name || {};
+  my %w;
+  while (my ($if, $nm) = each %$names) {
+    next unless defined $nm;
+    # Treat WLAN interfaces as wireless; include radioN if you want channel/power on radios too.
+    if ($nm =~ /^wlan\d+$/i || $nm =~ /^radio\d+$/i) {
+      $w{$if} = 1;
+    }
+  }
+  return \%w;
+}
+
+
+
+# --- SSID broadcast flag per ifIndex (1=broadcast)
+sub i_ssidbcast {
+  my ($i) = @_;
+
+  my $ssid_by_if = $i->i_ssidlist() || {};  # ifIndex -> SSID (you said this is OK)
+  my %out;
+
+  # Mark every SSID-bearing interface as broadcast (1).
+  for my $if (keys %$ssid_by_if) {
+    $out{$if} = 1;
+  }
+  return \%out;
+}
+
+# --- BSSID per ifIndex (MAC). Use per-interface MAC from IF-MIB.
+sub i_ssidmac {
+  my ($i) = @_;
+
+  my $i_name     = $i->i_name() || {};      # ifIndex -> name
+  my $i_mac      = $i->i_mac()  || {};      # ifIndex -> MAC (binary/hex munged by SNMP::Info)
+  my $ssid_by_if = $i->i_ssidlist() || {};  # only return for ports that actually host an SSID
+
+  my %out;
+  while (my ($if, $nm) = each %$i_name) {
+    next unless defined $nm && $nm =~ /^wlan\d+$/i;
+    next unless exists $ssid_by_if->{$if};         # only for SSID-bearing ifIndexes
+    my $mac = $i_mac->{$if};
+    next unless defined $mac && $mac ne '';
+    $out{$if} = $mac;                               # SNMP::Info will munge to xx:xx:.. form
+  }
+  return \%out;
+}
+
+# --- helpers ---------------------------------------------------------------
+
+# Normalize Cambium band strings to 'both' / '2.4' / '5'
+sub _cb_norm_band {
+  my ($s) = @_;
+  return '' unless defined $s;
+  $s = lc $s;
+  return 'both' if $s =~ /both/;
+  return '2.4'  if $s =~ /2\.?4/;
+  return '5'    if $s =~ /\b5g?/;
+  return '';
+}
+
+# Build: name maps, radio list, wlan buckets by radioNum, etc.
+# Returns:
+#  - \%ifname    : ifIndex -> ifName
+#  - \%name2idx  : ifName  -> ifIndex
+#  - \@rad_nums  : [ 0, 1, ... ] radios present
+#  - \%wlan_by_r : radioNum -> [ ifIndex, ... ] (ordered)
+sub _cb_collect_ifaces {
+  my ($i) = @_;
+  my $names = $i->i_name || {};
+
+  my (%ifname, %name2idx);
+  while (my ($idx, $nm) = each %$names) {
+    next unless defined $nm && $nm ne '';
+    $ifname{$idx}  = $nm;
+    $name2idx{$nm} = $idx;
+  }
+
+  # radios present (radio0, radio1, ...)
+  my @rad_nums;
+  for my $idx (keys %ifname) {
+    my $nm = $ifname{$idx};
+    if (defined $nm && $nm =~ /^radio(\d+)$/i) {
+      push @rad_nums, $1 + 0;
+    }
+  }
+  @rad_nums = sort { $a <=> $b } @rad_nums;
+
+  # Bucket wlanX by radio using Cambium's 16-per-radio convention.
+  my %wlan_by_r = map { $_ => [] } @rad_nums;
+  for my $idx (sort { $a <=> $b } keys %ifname) {
+    my $nm = $ifname{$idx} // next;
+    next unless $nm =~ /^wlan(\d+)$/i;
+    my $wnum   = $1 + 0;
+    my $rnum   = int($wnum / 16); # wlan0-15 -> radio0, 16-31 -> radio1, etc.
+    # Only bucket if that radio actually exists
+    push @{ $wlan_by_r{$rnum} }, $idx if grep { $_ == $rnum } @rad_nums;
+  }
+
+  return (\%ifname, \%name2idx, \@rad_nums, \%wlan_by_r);
+}
+
+# --- SSIDs to ports --------------------------------------------------------
+
+# Map *all configured* WLAN profiles to concrete ports:
+# - 'both' => one wlanX from *each* radio bucket
+# - '2.4'  => one from radio whose band is 2.4
+# - '5'    => one from radio whose band is 5
+# Fallbacks are safe and never throw; if a bucket is empty we just skip that leg.
+sub i_ssidlist {
+  my ($i) = @_;
+
+  my ($ifname, $name2idx, $rad_nums, $wlan_by_r) = _cb_collect_ifaces($i);
+  return {} unless @$rad_nums;
+
+  my $ssid_tbl = $i->cambiumWlanSsid || {};   # wlanProfileIdx -> SSID
+  my $band_tbl = $i->cambiumWlanBand || {};   # wlanProfileIdx -> string band
+
+  # Per radio, what band is it? (Cambium says per radio)
+  my $rb        = $i->cambiumRadioBandType || {}; # idx -> '2.4GHz'/'5GHz'
+  my %radio_band;
+  for my $k (keys %$rb) {
+    my ($n) = ($k =~ /(\d+)$/);
+    $radio_band{$n+0} = _cb_norm_band($rb->{$k});
+  }
+
+  # Process WLAN profiles in ascending numeric order
+  my @profiles = sort { ($a =~ /(\d+)$/ ? $1 : 0) <=> ($b =~ /(\d+)$/ ? $1 : 0) } keys %$ssid_tbl;
+
+  my %if_to_ssid;
+
+  PROFILE:
+  for my $k (@profiles) {
+    my ($pidx) = ($k =~ /(\d+)$/);
+    next unless defined $pidx;
+
+    my $ssid = $ssid_tbl->{$k};
+    next unless defined $ssid && $ssid ne '';
+
+    my $wb = _cb_norm_band( $band_tbl->{$k} // '' );
+
+    if ($wb eq 'both') {
+      # Take one wlan from every radio bucket
+      for my $r (@$rad_nums) {
+        my $ary = $wlan_by_r->{$r} || [];
+        my $ifx = shift @$ary;              # may be undef if bucket empty
+        $wlan_by_r->{$r} = $ary;            # write back mutation
+        $if_to_ssid{$ifx} = $ssid if defined $ifx;
+      }
+      next PROFILE;
+    }
+
+    # Single-band SSID: find a radio that matches this band and take one wlan from its bucket
+    if ($wb eq '2.4' || $wb eq '5') {
+      for my $r (@$rad_nums) {
+        next unless ($radio_band{$r} || '') eq $wb;
+        my $ary = $wlan_by_r->{$r} || [];
+        my $ifx = shift @$ary;
+        $wlan_by_r->{$r} = $ary;
+        if (defined $ifx) {
+          $if_to_ssid{$ifx} = $ssid;
+          next PROFILE;
+        }
+      }
+      # No matching radio had capacity; fall through to best-effort
+    }
+
+    # Best-effort fallback: first bucket with capacity
+    for my $r (@$rad_nums) {
+      my $ary = $wlan_by_r->{$r} || [];
+      my $ifx = shift @$ary;
+      $wlan_by_r->{$r} = $ary;
+      if (defined $ifx) {
+        $if_to_ssid{$ifx} = $ssid;
+        last;
+      }
+    }
+  }
+
+  # Strip any undef keys (safety) and return hashref
+  delete $if_to_ssid{undef};
+  return \%if_to_ssid;
+}
+
+# --- Client counts per interface ------------------------------------------
+# Use cambiumClientWlan (profile idx) + cambiumClientRadioIndex (1-based)
+# to put clients on the exact wlanX chosen above.
+sub i_ssidmembers {
+  my ($i) = @_;
+
+  my ($ifname, $name2idx, $rad_nums, $wlan_by_r_seed) = _cb_collect_ifaces($i);
+  return {} unless @$rad_nums;
+
+  # Rebuild the same i_ssidlist allocation so we know (profile, radio) -> ifIndex
+  my $ssid_tbl = $i->cambiumWlanSsid || {};
+  my $band_tbl = $i->cambiumWlanBand || {};
+  my $rb       = $i->cambiumRadioBandType || {};
+
+  my %radio_band;
+  for my $k (keys %$rb) {
+    my ($n) = ($k =~ /(\d+)$/);
+    $radio_band{$n+0} = _cb_norm_band($rb->{$k});
+  }
+
+  # Clone wlan buckets so we can pop from them independently
+  my %wlan_by_r = map { my $r=$_; $r => [ @{ $wlan_by_r_seed->{$r} // [] } ] } keys %$wlan_by_r_seed;
+
+  my @profiles = sort { ($a =~ /(\d+)$/ ? $1 : 0) <=> ($b =~ /(\d+)$/ ? $1 : 0) } keys %$ssid_tbl;
+  my %slot_for;  # $slot_for{$profile_idx}{$radioNum} = ifIndex
+
+  for my $k (@profiles) {
+    my ($pidx) = ($k =~ /(\d+)$/);
+    next unless defined $pidx;
+    my $wb = _cb_norm_band( $band_tbl->{$k} // '' );
+
+    if ($wb eq 'both') {
+      for my $r (@$rad_nums) {
+        my $ifx = shift @{ $wlan_by_r{$r} || [] } // next;
+        $slot_for{$pidx}{$r} = $ifx;
+      }
+      next;
+    }
+
+    if ($wb eq '2.4' || $wb eq '5') {
+      for my $r (@$rad_nums) {
+        next unless ($radio_band{$r} || '') eq $wb;
+        my $ifx = shift @{ $wlan_by_r{$r} || [] } // next;
+        $slot_for{$pidx}{$r} = $ifx;
+        last;
+      }
+      next;
+    }
+
+    # Fallback
+    for my $r (@$rad_nums) {
+      my $ifx = shift @{ $wlan_by_r{$r} || [] } // next;
+      $slot_for{$pidx}{$r} = $ifx;
+      last;
+    }
+  }
+
+  # Now count clients
+  my $cli_wlan  = $i->cambiumClientWlan       || {}; # idx -> profile number
+  my $cli_radio = $i->cambiumClientRadioIndex || {}; # idx -> 1..N (1-based)
+
+  my %cnt;
+  for my $k (keys %$cli_wlan) {
+    my $pidx = $cli_wlan->{$k};
+    next unless defined $pidx && $pidx =~ /^\d+$/;
+
+    my $r1 = $cli_radio->{$k};
+    next unless defined $r1 && $r1 =~ /^\d+$/;
+
+    my $pos = $r1 - 1;                      # 1-based to 0-based
+    next if $pos < 0 || $pos > $#$rad_nums;
+    my $rnum = $rad_nums->[$pos];
+
+    my $ifx = $slot_for{$pidx}{$rnum} // next;
+    $cnt{$ifx}++;
+  }
+
+  return \%cnt;
+}
+
+
+# --- Radio channel: map Cambium radio index -> ifIndex(radioY)
+sub i_80211channel {
+  my $i     = shift;
+  my $names = $i->i_name || {};
+  my %radio_if;
+  for my $ifIndex (keys %$names) {
+    my $n = $names->{$ifIndex} // next;
+    $radio_if{$1} = $ifIndex if $n =~ /^radio(\d+)$/i;
+  }
+
+  my $chan_tbl = $i->cambiumRadioChannel || {};
+  my %out;
+
+  for my $k (keys %$chan_tbl) {
+    my ($r_idx) = ($k =~ /(\d+)$/);
+    next unless defined $r_idx;
+    my $ifIndex = $radio_if{$r_idx};
+    next unless defined $ifIndex;
+    my $val = $chan_tbl->{$k};
+    next unless defined $val && $val ne '';
+    $out{$ifIndex} = $val + 0; # stringify digits -> numeric
+  }
+  return \%out;
+}
+
+# --- Radio TX power (Cambium dBm integer -> mW as Netdisco expects)
+sub dot11_cur_tx_pwr_mw {
+  my $i     = shift;
+  my $names = $i->i_name || {};
+  my %radio_if;
+  for my $ifIndex (keys %$names) {
+    my $n = $names->{$ifIndex} // next;
+    $radio_if{$1} = $ifIndex if $n =~ /^radio(\d+)$/i;
+  }
+
+  my $pwr_tbl = $i->cambiumRadioTransmitPower || {};
+  my %out;
+
+  for my $k (keys %$pwr_tbl) {
+    my ($r_idx) = ($k =~ /(\d+)$/);
+    next unless defined $r_idx;
+    my $ifIndex = $radio_if{$r_idx};
+    next unless defined $ifIndex;
+    my $dbm = $pwr_tbl->{$k};
+    next unless defined $dbm && $dbm =~ /^-?\d+(?:\.\d+)?$/;
+    my $mw = (10 ** ($dbm / 10));
+    $out{$ifIndex} = int($mw + 0.5);
+  }
+  return \%out;
+}
+
+
+# --- map WLAN index -> ifIndex(wlanX)
+sub _wlan_idx_to_ifindex {
+  my ($i) = @_;
+  my $names = $i->i_name() || {};
+  my %wlan_if;
+  while (my ($if, $nm) = each %$names) {
+    next unless defined $nm && $nm =~ /^wlan(\d+)$/i;
+    $wlan_if{$1} = $if;
+  }
+  return \%wlan_if; # { wlanIdx => ifIndex }
+}
+
+# ============================================================
+# cd11_* API expected by Netdisco's Wireless worker
+# ============================================================
+
+# cd11_mac: { ifIndex => [ mac, ... ] }  (primary list used by worker)
+sub cd11_mac {
+  my ($i) = @_;
+  my $wlan_map = _wlan_idx_to_ifindex($i);              # wlanIdx -> ifIndex
+  my $mac_tbl  = $i->cambiumClientMACAddress() || {};   # idx -> STRING
+  my $wlan_tbl = $i->cambiumClientWlan()      || {};    # idx -> INTEGER wlanIdx
+
+  my %by_if;
+  for my $k (keys %$mac_tbl) {
+    my ($idx) = ($k =~ /(\d+)$/) or next;
+    my $widx = $wlan_tbl->{$k};
+    next unless defined $widx;
+    my $if   = $wlan_map->{$widx} // next;
+
+    my $mac  = _try_decode_any_mac_value($mac_tbl->{$k}) // next;
+    push @{ $by_if{$if} }, $mac;
+  }
+  return \%by_if;
+}
+
+# cd11_ip: { mac => ip }   (optional enrichment)
+sub cd11_ip {
+  my ($i) = @_;
+  my $mac_tbl = $i->cambiumClientMACAddress() || {};
+  my $ip_tbl  = $i->cambiumClientIPAddress()  || {};
+  my %mac2ip;
+
+  for my $k (keys %$mac_tbl) {
+    my $mac = _cam_str_to_mac($mac_tbl->{$k}) // next;
+    my $ip  = $ip_tbl->{$k};
+    next unless defined $ip && $ip =~ /^\d{1,3}(?:\.\d{1,3}){3}$/;
+    $mac2ip{$mac} = $ip;
+  }
+  return \%mac2ip;
+}
+
+# cd11_port: { mac => ifIndex }  (lets worker bind client to port directly)
+sub cd11_port {
+  my ($i) = @_;
+  my $wlan_map = _wlan_idx_to_ifindex($i);
+  my $mac_tbl  = $i->cambiumClientMACAddress() || {};
+  my $wlan_tbl = $i->cambiumClientWlan()      || {};
+  my %mac2if;
+
+  for my $k (keys %$mac_tbl) {
+    my $mac  = _try_decode_any_mac_value($mac_tbl->{$k}) // next;
+    my $widx = $wlan_tbl->{$k};
+    my $if   = defined $widx ? $wlan_map->{$widx} : undef;
+    next unless defined $if;
+    $mac2if{$mac} = $if;
+  }
+  return \%mac2if;
+}
+
+# cd11_ssid: { mac => ssid } (optional, nice for UI)
+sub cd11_ssid {
+  my ($i) = @_;
+  my $mac_tbl  = $i->cambiumClientMACAddress() || {};
+  my $wlan_tbl = $i->cambiumClientWlan()      || {};
+  my $ssid_tbl = $i->cambiumWlanSsid()        || {};
+  my %mac2ssid;
+
+  for my $k (keys %$mac_tbl) {
+    my $mac  = _try_decode_any_mac_value($mac_tbl->{$k}) // next;
+    my $widx = $wlan_tbl->{$k};
+    my $ssid = defined $widx ? $ssid_tbl->{$widx} : undef;
+    next unless defined $ssid && $ssid ne '';
+    $mac2ssid{$mac} = $ssid;
+  }
+  return \%mac2ssid;
+}
 
 
 # ---------------------------------------------------------------------------
